@@ -113,6 +113,27 @@
   background: #1b1f29;
 }
 
+.new-flow-button {
+  height: 31px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: #eef0ff;
+  background: #30364f;
+  border: 1px solid #505b83;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.new-flow-button:hover {
+  background: #3b4464;
+  border-color: #707eae;
+}
+
 .project-dot,
 .canvas-badge > span,
 .save-state > span,
@@ -445,6 +466,21 @@
   font-size: 10px;
 }
 
+.toolbar-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.delete-node-button:not(:disabled) {
+  color: #f19aa2;
+  border-color: #67414a;
+}
+
+.delete-node-button:not(:disabled):hover {
+  color: #ffc1c6;
+  background: #38262c;
+}
+
 .toolbar-button--icon {
   width: 28px;
   padding: 0;
@@ -477,6 +513,43 @@
   background-color: #14171e;
   background-image: radial-gradient(#323947 0.7px, transparent 0.7px);
   background-size: 22px 22px;
+}
+
+.canvas-empty-state {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: #8e99ad;
+  pointer-events: none;
+  text-align: center;
+}
+
+.canvas-empty-state__icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 4px;
+  color: #a6a9ff;
+  background: #292c42;
+  border: 1px solid #3b3e5d;
+  border-radius: 14px;
+}
+
+.canvas-empty-state strong {
+  color: #dce2f0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.canvas-empty-state > span:last-child {
+  color: #838da1;
+  font-size: 11px;
 }
 
 .flow-canvas .react-flow__background {
@@ -1228,6 +1301,83 @@
   clip-path: inset(50%);
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #080a10b8;
+  backdrop-filter: blur(3px);
+}
+
+.new-flow-dialog {
+  width: min(100%, 390px);
+  padding: 22px;
+  color: #e5e9f2;
+  background: #1b1f29;
+  border: 1px solid #3a4151;
+  border-radius: 12px;
+  box-shadow: 0 24px 80px #0009;
+}
+
+.new-flow-dialog__heading {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  margin-bottom: 22px;
+}
+
+.new-flow-dialog__heading h2 {
+  margin: 0 0 5px;
+  color: #edf0fa;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.new-flow-dialog__heading p {
+  margin: 0;
+  color: #8993a7;
+  font-size: 10px;
+}
+
+.new-flow-dialog__label {
+  display: block;
+  margin-bottom: 7px;
+  color: #aab3c6;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.new-flow-dialog > input {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  color: #e6eaf4;
+  background: #13161e;
+  border: 1px solid #3a4151;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+}
+
+.new-flow-dialog > input:focus {
+  border-color: #818cf4;
+  outline: 2px solid #818cf433;
+}
+
+.new-flow-dialog > input::placeholder {
+  color: #6f798d;
+}
+
+.new-flow-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 58px minmax(390px, 1fr) 300px;
@@ -1250,5 +1400,11 @@
   }
   .app-header {
     gap: 11px;
+  }
+  .new-flow-button {
+    padding: 0 7px;
+  }
+  .save-state {
+    display: none;
   }
 }

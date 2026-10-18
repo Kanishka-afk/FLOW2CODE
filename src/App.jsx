@@ -1,6 +1,8 @@
-import { useCallback, useRef, useState, createContext, useContext } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, createContext, useContext } from 'react'
 import {
   addEdge,
+  applyEdgeChanges,
+  applyNodeChanges,
   Background,
   Controls,
   Handle,
@@ -8,15 +10,12 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
-  useEdgesState,
-  useNodesState,
   useReactFlow,
 } from '@xyflow/react'
 import {
   Braces,
   Check,
   ChevronDown,
-  CircleHelp,
   Code2,
   Copy,
   Download,
@@ -27,7 +26,6 @@ import {
   Play,
   Plus,
   Search,
-  Settings2,
   Terminal,
   TextCursorInput,
   Workflow,
@@ -47,13 +45,54 @@ const nodeDefinitions = [
   { type: 'decision', label: 'Decision', description: 'Check a condition', icon: GitBranch, color: 'yellow' },
 ]
 
-const styledEdges = (edges) => edges.map((edge) => ({
-  ...edge,
-  animated: false,
-  style: { stroke: '#64748b', strokeWidth: 1.6 },
-  labelStyle: { fill: '#a6afc3', fontSize: 11 },
-  labelBgStyle: { fill: '#171a23' },
+const USER_FLOWS_STORAGE_KEY = 'flow2code:user-flows:v1'
+const cloneFlow = (flow) => ({
+  ...flow,
+  nodes: flow.nodes.map((node) => ({ ...node, position: { ...node.position }, data: { ...node.data }, selected: false })),
+  edges: flow.edges.map((edge) => ({ ...edge })),
+})
+
+const builtInFlows = Object.entries(sampleFlows).map(([id, sample]) => ({
+  ...cloneFlow({ id, ...sample }),
+  builtIn: true,
 }))
+
+function loadSavedFlows() {
+  try {
+    const stored = window.localStorage.getItem(USER_FLOWS_STORAGE_KEY)
+    if (!stored) return { flows: [], activeFlowId: '' }
+    const saved = JSON.parse(stored)
+    if (!saved || !Array.isArray(saved.flows)) return { flows: [], activeFlowId: '' }
+    const ids = new Set()
+    const flows = saved.flows.filter((flow) => {
+      if (
+        !flow || typeof flow.id !== 'string' || !flow.id.startsWith('user-') ||
+        !flow.id.trim() || typeof flow.name !== 'string' || !flow.name.trim() ||
+        !Array.isArray(flow.nodes) || !Array.isArray(flow.edges) || ids.has(flow.id)
+      ) return false
+      const nodeIds = new Set()
+      if (flow.nodes.some((node) => {
+        if (
+          !node || typeof node.id !== 'string' || !node.id || nodeIds.has(node.id) ||
+          !nodeDefinitions.some((definition) => definition.type === node.type) ||
+          !node.position || !Number.isFinite(node.position.x) || !Number.isFinite(node.position.y) ||
+          !node.data || typeof node.data !== 'object'
+        ) return true
+        nodeIds.add(node.id)
+        return false
+      })) return false
+      if (flow.edges.some((edge) => !edge || !nodeIds.has(edge.source) || !nodeIds.has(edge.target))) return false
+      ids.add(flow.id)
+      return true
+    }).map((flow) => ({ ...flow, tests: Array.isArray(flow.tests) ? flow.tests : [], builtIn: false }))
+    return {
+      flows,
+      activeFlowId: flows.some((flow) => flow.id === saved.activeFlowId) ? saved.activeFlowId : '',
+    }
+  } catch {
+    return { flows: [], activeFlowId: '' }
+  }
+}
 
 const getNodePlaceholder = (type) => ({
   input: 'int number',
@@ -144,7 +183,7 @@ const nodeTypes = {
   decision: FlowNode,
 }
 
-function Header({ nodeCount, edgeCount, sampleId, onSampleChange, onDownload, codeAvailable }) {
+function Header({ nodeCount, edgeCount, flows, activeFlowId, onFlowChange, onNewFlow, onDownload, codeAvailable }) {
   return (
     <header className="app-header">
       <a className="brand" href="#" aria-label="Flow2Code home">
@@ -154,16 +193,22 @@ function Header({ nodeCount, edgeCount, sampleId, onSampleChange, onDownload, co
       <span className="header-divider" />
       <label className="project-switcher">
         <span className="project-dot" />
-        <select value={sampleId} onChange={(event) => onSampleChange(event.target.value)} aria-label="Choose a sample flow">
-          {Object.entries(sampleFlows).map(([id, sample]) => <option key={id} value={id}>{sample.name}</option>)}
+        <select value={activeFlowId} onChange={(event) => onFlowChange(event.target.value)} aria-label="Choose a flowchart">
+          <optgroup label="Sample flows">
+            {flows.filter((flow) => flow.builtIn).map((flow) => <option key={flow.id} value={flow.id}>{flow.name}</option>)}
+          </optgroup>
+          {flows.some((flow) => !flow.builtIn) && (
+            <optgroup label="My flows">
+              {flows.filter((flow) => !flow.builtIn).map((flow) => <option key={flow.id} value={flow.id}>{flow.name}</option>)}
+            </optgroup>
+          )}
         </select>
         <ChevronDown size={14} />
       </label>
       <span className="header-path">/ <span>main.flow</span></span>
       <div className="header-spacer" />
       <div className="save-state"><span /> All changes saved</div>
-      <button className="header-icon-button" aria-label="Help"><CircleHelp size={17} /></button>
-      <button className="header-icon-button" aria-label="Settings"><Settings2 size={17} /></button>
+      <button className="new-flow-button" onClick={onNewFlow}><Plus size={15} /> New Flow</button>
       <span className="header-divider header-divider--compact" />
       <button className="share-button" onClick={onDownload} disabled={!codeAvailable}><Download size={15} /> Download .c</button>
       <div className="avatar">KC</div>
@@ -218,7 +263,7 @@ function NodePalette({ onAddNode }) {
   )
 }
 
-function CanvasToolbar({ onFitView, onGenerate, flowName, nodeCount }) {
+function CanvasToolbar({ onFitView, onGenerate, onDeleteNode, canDeleteNode, flowName, nodeCount }) {
   return (
     <div className="canvas-toolbar">
       <div className="canvas-heading">
@@ -227,6 +272,7 @@ function CanvasToolbar({ onFitView, onGenerate, flowName, nodeCount }) {
       </div>
       <div className="canvas-actions">
         <span className="canvas-count">{nodeCount} nodes</span>
+        <button className="toolbar-button delete-node-button" onClick={onDeleteNode} disabled={!canDeleteNode}><X size={13} /> Delete Node</button>
         <button className="toolbar-button" onClick={onFitView}><Search size={14} /> Fit view</button>
         <button className="generate-button" onClick={onGenerate}><Code2 size={14} /> Generate Code</button>
         <button className="toolbar-button toolbar-button--icon" aria-label="Canvas options"><MoreHorizontal size={17} /></button>
@@ -275,7 +321,7 @@ function TestPanel({ onRun, running, result, tests }) {
           <button className="test-tab"><Braces size={15} /> Console</button>
         </div>
         <div className="test-actions">
-          {result && <span className={`test-result ${result === 'passed' ? 'test-result--passed' : ''}`}><Check size={13} /> {result === 'passed' ? '2 tests passed' : 'Ready to run'}</span>}
+          {result && <span className={`test-result ${result === 'passed' ? 'test-result--passed' : ''}`}><Check size={13} /> {result === 'passed' ? `${tests.length} tests passed` : 'Ready to run'}</span>}
           <button className="run-button" onClick={onRun} disabled={running}>
             <Play size={13} fill="currentColor" /> {running ? 'Running…' : 'Run tests'}
           </button>
@@ -294,11 +340,51 @@ function TestPanel({ onRun, running, result, tests }) {
   )
 }
 
+function NewFlowDialog({ onCancel, onCreate }) {
+  const [name, setName] = useState('')
+
+  const submit = (event) => {
+    event.preventDefault()
+    onCreate(name)
+  }
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onCancel()
+    }}>
+      <form className="new-flow-dialog" role="dialog" aria-modal="true" aria-labelledby="new-flow-title" onSubmit={submit}>
+        <div className="new-flow-dialog__heading">
+          <span className="brand-mark"><Workflow size={19} /></span>
+          <div>
+            <h2 id="new-flow-title">Create a new flow</h2>
+            <p>Start with a blank canvas and build your flowchart.</p>
+          </div>
+        </div>
+        <label className="new-flow-dialog__label" htmlFor="new-flow-name">Flow name</label>
+        <input
+          id="new-flow-name"
+          autoFocus
+          maxLength={64}
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder="Untitled Flow"
+        />
+        <div className="new-flow-dialog__actions">
+          <button type="button" className="toolbar-button" onClick={onCancel}>Cancel</button>
+          <button type="submit" className="generate-button"><Plus size={14} /> Create Flow</button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
 function FlowEditor() {
-  const [sampleId, setSampleId] = useState(defaultSampleId)
-  const activeSample = sampleFlows[sampleId]
-  const [nodes, setNodes, onNodesChange] = useNodesState(activeSample.nodes)
-  const [edges, setEdges, onEdgesChange] = useEdgesState(styledEdges(activeSample.edges))
+  const [initialData] = useState(loadSavedFlows)
+  const [flows, setFlows] = useState(() => [...builtInFlows, ...initialData.flows])
+  const [activeFlowId, setActiveFlowId] = useState(() => (
+    initialData.activeFlowId || defaultSampleId
+  ))
+  const [showNewFlowDialog, setShowNewFlowDialog] = useState(false)
   const [running, setRunning] = useState(false)
   const [testResult, setTestResult] = useState('')
   const [generatedCode, setGeneratedCode] = useState('')
@@ -307,15 +393,48 @@ function FlowEditor() {
   const [copied, setCopied] = useState(false)
   const canvasRef = useRef(null)
   const { screenToFlowPosition, fitView } = useReactFlow()
+  const activeFlow = useMemo(
+    () => flows.find((flow) => flow.id === activeFlowId) ?? flows[0],
+    [activeFlowId, flows],
+  )
+  const nodes = activeFlow.nodes
+  const edges = activeFlow.edges
+  const selectedNodeId = nodes.find((node) => node.selected)?.id ?? ''
+
+  useEffect(() => {
+    try {
+      const savedFlows = flows
+        .filter((flow) => !flow.builtIn)
+        .map((flow) => ({
+          ...flow,
+          nodes: flow.nodes.map((node) => ({ ...node, selected: false })),
+        }))
+      window.localStorage.setItem(USER_FLOWS_STORAGE_KEY, JSON.stringify({
+        flows: savedFlows,
+        activeFlowId: activeFlow?.builtIn ? '' : activeFlowId,
+      }))
+    } catch (error) {
+      console.error('Flow2Code could not save user flows to local storage.', error)
+    }
+  }, [activeFlow?.builtIn, activeFlowId, flows])
+
+  const updateActiveFlow = useCallback((update) => {
+    setFlows((currentFlows) => currentFlows.map((flow) => (
+      flow.id === activeFlowId ? update(flow) : flow
+    )))
+  }, [activeFlowId])
 
   const updateNodeDetail = useCallback((id, detail) => {
-    setNodes((currentNodes) => currentNodes.map((node) => (
-      node.id === id ? { ...node, data: { ...node.data, detail } } : node
-    )))
+    updateActiveFlow((flow) => ({
+      ...flow,
+      nodes: flow.nodes.map((node) => (
+        node.id === id ? { ...node, data: { ...node.data, detail } } : node
+      )),
+    }))
     setGeneratedCode('')
     setGenerationError('')
     setActionError('')
-  }, [setNodes])
+  }, [updateActiveFlow])
 
   const clearGeneratedCode = useCallback(() => {
     setGeneratedCode('')
@@ -324,12 +443,27 @@ function FlowEditor() {
     setCopied(false)
   }, [])
 
-  const changeSample = (nextSampleId) => {
-    const sample = sampleFlows[nextSampleId]
-    if (!sample) return
-    setSampleId(nextSampleId)
-    setNodes(sample.nodes)
-    setEdges(styledEdges(sample.edges))
+  const changeFlow = (nextFlowId) => {
+    if (!flows.some((flow) => flow.id === nextFlowId)) return
+    setActiveFlowId(nextFlowId)
+    setFlows((currentFlows) => currentFlows.map((flow) => flow.id === nextFlowId
+      ? { ...flow, nodes: flow.nodes.map((node) => ({ ...node, selected: false })) }
+      : flow))
+    setTestResult('')
+    clearGeneratedCode()
+    window.requestAnimationFrame(() => fitView({ padding: 0.22, duration: 250 }))
+  }
+
+  const createFlow = (requestedName) => {
+    const name = requestedName.trim() || 'Untitled Flow'
+    let id = ''
+    do {
+      id = `user-${globalThis.crypto.randomUUID()}`
+    } while (flows.some((flow) => flow.id === id))
+    const newFlow = { id, name, nodes: [], edges: [], tests: [], builtIn: false }
+    setFlows((currentFlows) => [...currentFlows, newFlow])
+    setActiveFlowId(id)
+    setShowNewFlowDialog(false)
     setTestResult('')
     clearGeneratedCode()
   }
@@ -363,7 +497,7 @@ function FlowEditor() {
     const url = URL.createObjectURL(file)
     const link = document.createElement('a')
     link.href = url
-    link.download = `${activeSample.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.c`
+    link.download = `${activeFlow.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.c`
     document.body.appendChild(link)
     link.click()
     link.remove()
@@ -371,13 +505,16 @@ function FlowEditor() {
   }
 
   const onConnect = useCallback((connection) => {
-    setEdges((currentEdges) => addEdge({
-      ...connection,
-      type: 'smoothstep',
-      style: { stroke: '#6e8bff', strokeWidth: 1.8 },
-    }, currentEdges))
+    updateActiveFlow((flow) => ({
+      ...flow,
+      edges: addEdge({
+        ...connection,
+        type: 'smoothstep',
+        style: { stroke: '#6e8bff', strokeWidth: 1.8 },
+      }, flow.edges),
+    }))
     clearGeneratedCode()
-  }, [clearGeneratedCode, setEdges])
+  }, [clearGeneratedCode, updateActiveFlow])
 
   const addNode = useCallback((type, screenPosition) => {
     const definition = nodeDefinitions.find((item) => item.type === type)
@@ -389,16 +526,22 @@ function FlowEditor() {
           x: (bounds?.left ?? 0) + (bounds?.width ?? window.innerWidth) / 2 + (nodes.length % 4) * 22,
           y: (bounds?.top ?? 0) + (bounds?.height ?? window.innerHeight) / 2 + (nodes.length % 3) * 18,
         })
-    const id = `${type}-${globalThis.crypto.randomUUID()}`
-    setNodes((currentNodes) => [...currentNodes, {
-      id,
-      type,
-      position,
-      data: { label: type === 'start' ? 'Start' : type === 'end' ? 'End' : definition.label, detail: '' },
-    }])
+    let id = ''
+    do {
+      id = `${type}-${globalThis.crypto.randomUUID()}`
+    } while (nodes.some((node) => node.id === id))
+    updateActiveFlow((flow) => ({
+      ...flow,
+      nodes: [...flow.nodes, {
+        id,
+        type,
+        position,
+        data: { label: type === 'start' ? 'Start' : type === 'end' ? 'End' : definition.label, detail: '' },
+      }],
+    }))
     setTestResult('')
     clearGeneratedCode()
-  }, [clearGeneratedCode, nodes.length, screenToFlowPosition, setNodes])
+  }, [clearGeneratedCode, nodes, screenToFlowPosition, updateActiveFlow])
 
   const onDrop = useCallback((event) => {
     event.preventDefault()
@@ -415,26 +558,69 @@ function FlowEditor() {
     }, 650)
   }
 
+  const onNodesChange = useCallback((changes) => {
+    updateActiveFlow((flow) => ({
+      ...flow,
+      nodes: applyNodeChanges(changes, flow.nodes),
+    }))
+    if (changes.some((change) => !['select', 'dimensions'].includes(change.type))) clearGeneratedCode()
+  }, [clearGeneratedCode, updateActiveFlow])
+
+  const onEdgesChange = useCallback((changes) => {
+    updateActiveFlow((flow) => ({
+      ...flow,
+      edges: applyEdgeChanges(changes, flow.edges),
+    }))
+    if (changes.some((change) => change.type !== 'select')) clearGeneratedCode()
+  }, [clearGeneratedCode, updateActiveFlow])
+
+  const deleteSelectedNode = () => {
+    if (!selectedNodeId) return
+    updateActiveFlow((flow) => ({
+      ...flow,
+      nodes: flow.nodes.filter((node) => node.id !== selectedNodeId),
+      edges: flow.edges.filter((edge) => edge.source !== selectedNodeId && edge.target !== selectedNodeId),
+    }))
+    clearGeneratedCode()
+  }
+
   return (
     <div className="app-shell">
-      <Header nodeCount={nodes.length} edgeCount={edges.length} sampleId={sampleId} onSampleChange={changeSample} onDownload={downloadCode} codeAvailable={Boolean(generatedCode)} />
+      <Header
+        nodeCount={nodes.length}
+        edgeCount={edges.length}
+        flows={flows}
+        activeFlowId={activeFlow.id}
+        onFlowChange={changeFlow}
+        onNewFlow={() => setShowNewFlowDialog(true)}
+        onDownload={downloadCode}
+        codeAvailable={Boolean(generatedCode)}
+      />
       <NodePalette onAddNode={addNode} />
       <main className="canvas-area">
-        <CanvasToolbar flowName={activeSample.name} nodeCount={nodes.length} onGenerate={generateCode} onFitView={() => fitView({ padding: 0.22, duration: 350 })} />
+        <CanvasToolbar
+          flowName={activeFlow.name}
+          nodeCount={nodes.length}
+          onGenerate={generateCode}
+          onDeleteNode={deleteSelectedNode}
+          canDeleteNode={Boolean(selectedNodeId)}
+          onFitView={() => fitView({ padding: 0.22, duration: 350 })}
+        />
         <div className="flow-canvas" ref={canvasRef} onDrop={onDrop} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move' }}>
+          {nodes.length === 0 && (
+            <div className="canvas-empty-state">
+              <span className="canvas-empty-state__icon"><Workflow size={21} /></span>
+              <strong>Your canvas is empty</strong>
+              <span>Add a node from the left panel to get started.</span>
+            </div>
+          )}
           <NodeUpdateContext.Provider value={updateNodeDetail}>
             <ReactFlow
               nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
-              onNodesChange={(changes) => {
-                onNodesChange(changes)
-                if (changes.some((change) => change.type === 'remove')) clearGeneratedCode()
-              }}
-              onEdgesChange={(changes) => {
-                onEdgesChange(changes)
-                if (changes.some((change) => change.type !== 'select')) clearGeneratedCode()
-              }}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
               onConnect={onConnect}
               fitView
               fitViewOptions={{ padding: 0.22 }}
@@ -454,8 +640,9 @@ function FlowEditor() {
           <div className="canvas-help"><span>⌘</span> + scroll to zoom <i /> Drag nodes to move</div>
         </div>
       </main>
-      <TestPanel onRun={onRunTests} running={running} result={testResult} tests={activeSample.tests} />
+      <TestPanel onRun={onRunTests} running={running} result={testResult} tests={activeFlow.tests} />
       <CodePreview code={generatedCode} onCopy={copyCode} onDownload={downloadCode} copied={copied} error={generationError || actionError} />
+      {showNewFlowDialog && <NewFlowDialog onCancel={() => setShowNewFlowDialog(false)} onCreate={createFlow} />}
     </div>
   )
 }
